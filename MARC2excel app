@@ -1,0 +1,218 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+import pandas as pd
+from pymarc import MARCReader, parse_xml_to_array
+
+
+class MARCConverterApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Advanced MARC → Excel Converter")
+        self.root.geometry("1350x680")
+
+        self.df = None
+        self.preview_df = None
+        self.status = tk.StringVar(value="Ready")
+        self.active_series = "ALL"
+
+        self.build_ui()
+
+    def build_ui(self):
+        # ---------------- TOP CONTROLS ----------------
+        top = tk.Frame(self.root)
+        top.pack(fill="x", pady=4)
+
+        tk.Button(
+            top, text="Upload MARC",
+            command=self.load_marc,
+            bg="#0D47A1", fg="white",
+            font=("Arial", 11, "bold")
+        ).pack(side="left", padx=6)
+
+        tk.Label(top, text="Preview records:").pack(side="left")
+        self.preview_limit = tk.Entry(top, width=6)
+        self.preview_limit.insert(0, "50")
+        self.preview_limit.pack(side="left", padx=4)
+
+        tk.Label(top, text="Tag / Subfield Filter:").pack(side="left", padx=6)
+        self.filter_entry = tk.Entry(top, width=45)
+        self.filter_entry.insert(0, "ALL")
+        self.filter_entry.pack(side="left")
+
+        # ---------------- TAG SERIES BAR ----------------
+        series_bar = tk.Frame(self.root)
+        series_bar.pack(fill="x", pady=6)
+
+        self.series_buttons = {}
+        for s in ["ALL", "0XX", "1XX", "2XX", "3XX", "4XX",
+                  "5XX", "6XX", "7XX", "8XX", "9XX"]:
+            btn = tk.Button(
+                series_bar,
+                text=s,
+                width=6,
+                bg="#7CB342",
+                fg="white",
+                font=("Arial", 10, "bold"),
+                command=lambda x=s: self.filter_series(x)
+            )
+            btn.pack(side="left", padx=4)
+            self.series_buttons[s] = btn
+
+        self.highlight_series("ALL")
+
+        # ---------------- TABLE ----------------
+        self.tree = ttk.Treeview(self.root, show="headings")
+        self.tree.pack(expand=True, fill="both", padx=6)
+
+        # ---------------- EXPORT BUTTONS ----------------
+        btns = tk.Frame(self.root)
+        btns.pack(pady=6)
+
+        tk.Button(btns, text="Export Excel",
+                  command=lambda: self.export("excel")).grid(row=0, column=0, padx=5)
+        tk.Button(btns, text="Export CSV",
+                  command=lambda: self.export("csv")).grid(row=0, column=1, padx=5)
+        tk.Button(btns, text="Export TXT |",
+                  command=lambda: self.export("txt")).grid(row=0, column=2, padx=5)
+
+        status_bar = tk.Label(
+            self.root, textvariable=self.status,
+            relief="sunken", anchor="w"
+        )
+        status_bar.pack(fill="x", side="bottom")
+
+    # ---------------- MARC LOADING ----------------
+    def load_marc(self):
+        path = filedialog.askopenfilename(
+            filetypes=[("MARC Files", "*.mrc *.xml *.marcxml")]
+        )
+        if not path:
+            return
+
+        self.status.set("Reading MARC records...")
+        self.root.update()
+
+        try:
+            if path.lower().endswith((".xml", ".marcxml")):
+                records = parse_xml_to_array(path)
+            else:
+                with open(path, "rb") as fh:
+                    records = list(MARCReader(
+                        fh,
+                        to_unicode=True,
+                        force_utf8=True,
+                        utf8_handling="replace"
+                    ))
+
+            preview = int(self.preview_limit.get()) if self.preview_limit.get().isdigit() else 50
+            allowed_filter = self.filter_entry.get().strip()
+
+            allowed = None
+            if allowed_filter.upper() != "ALL":
+                allowed = set(x.strip() for x in allowed_filter.split(","))
+
+            rows = []
+            all_cols = set()
+
+            for idx, rec in enumerate(records[:preview], start=1):
+                row = {"__record_id": idx}
+                counter = {}
+
+                for field in rec.fields:
+                    tag = field.tag
+
+                    if field.is_control_field():
+                        if not allowed or tag in allowed:
+                            row[tag] = field.data
+                            all_cols.add(tag)
+
+                    else:
+                        for code, val in field.subfields:
+                            base = f"{tag}${code}"
+                            if allowed and base not in allowed and tag not in allowed:
+                                continue
+
+                            counter[base] = counter.get(base, 0) + 1
+                            col = f"{base}_{counter[base]}"
+                            row[col] = val
+                            all_cols.add(col)
+
+                rows.append(row)
+
+            self.df = pd.DataFrame(rows).reindex(
+                columns=["__record_id"] + sorted(all_cols)
+            )
+
+            self.filter_series("ALL")
+            self.status.set(f"Loaded {len(rows)} records")
+
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+            self.status.set("Failed")
+
+    # ---------------- TAG SERIES FILTER ----------------
+    def filter_series(self, series):
+        self.active_series = series
+        self.highlight_series(series)
+
+        if self.df is None:
+            return
+
+        if series == "ALL":
+            self.preview_df = self.df
+        else:
+            start = int(series[0]) * 100
+            end = start + 99
+
+            cols = ["__record_id"]
+            for c in self.df.columns:
+                if c[:3].isdigit():
+                    tag = int(c[:3])
+                    if start <= tag <= end:
+                        cols.append(c)
+
+            self.preview_df = self.df[cols]
+
+        self.show_preview()
+
+    def highlight_series(self, active):
+        for k, btn in self.series_buttons.items():
+            btn.configure(bg="#7CB342")
+        self.series_buttons[active].configure(bg="#388E3C")
+
+    # ---------------- TABLE PREVIEW ----------------
+    def show_preview(self):
+        self.tree.delete(*self.tree.get_children())
+        self.tree["columns"] = list(self.preview_df.columns)
+
+        for col in self.preview_df.columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=160, anchor="w")
+
+        for _, row in self.preview_df.iterrows():
+            self.tree.insert("", "end", values=list(row.fillna("")))
+
+    # ---------------- EXPORT ----------------
+    def export(self, fmt):
+        if self.df is None:
+            messagebox.showwarning("No Data", "Nothing to export")
+            return
+
+        path = filedialog.asksaveasfilename()
+        if not path:
+            return
+
+        if fmt == "excel":
+            self.df.to_excel(path + ".xlsx", index=False)
+        elif fmt == "csv":
+            self.df.to_csv(path + ".csv", index=False)
+        else:
+            self.df.to_csv(path + ".txt", sep="|", index=False)
+
+        messagebox.showinfo("Done", "Export successful")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = MARCConverterApp(root)
+    root.mainloop()
