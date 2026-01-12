@@ -28,10 +28,3 @@ No PyQt / No DLL issues — works out of the box with Python.
 ✔ Built using **Tkinter** (no external GUI dependencies)
 
 ---
-
-## 📦 Installation
-
-### 1️⃣ Clone the repository
-```bash
-git clone https://github.com/yourusername/marc-to-excel-converter.git
-cd marc-to-excel-converter
